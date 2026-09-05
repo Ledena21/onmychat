@@ -3480,17 +3480,33 @@ async def generate_image_prompt(ctx: UserContext, instruction: str, prompt: str,
             
     # Add model/LoRA tags (only for assistant/character image)
     if instruction == SYSTEM_INSTRUCTION_CHARACTER:
-        assistant_model = ctx.settings.get("assistant_model", "")
-        if assistant_model:
-            model_tag = assistant_model if assistant_model.startswith("<") else f"<{assistant_model}>"
-            if model_tag not in tags_to_add:
-                tags_to_add.append(model_tag)
+        assistant_model = ctx.settings.get("assistant_model") or ctx.settings.get("character_lora") or user_context.DEFAULT_ASSISTANT_MODEL
+        if assistant_model.lower() == "june":
+            assistant_model = user_context.DEFAULT_ASSISTANT_MODEL
+        model_tag = assistant_model if assistant_model.startswith("<") else f"<{assistant_model}>"
+        if model_tag not in tags_to_add:
+            tags_to_add.append(model_tag)
                 
         character_lora = ctx.settings.get("character_lora", "")
-        if character_lora:
+        if character_lora and character_lora.lower() != "june" and character_lora != assistant_model:
             lora_tag = character_lora if character_lora.startswith("<") else f"<{character_lora}>"
             if lora_tag not in tags_to_add:
                 tags_to_add.append(lora_tag)
+
+    # Style LoRAs: default for realistic mode or from settings
+    effective_fun = ctx.private_mode and ctx.settings.get("content_mode", "work") == "fun"
+    if style == "realistic" and not effective_fun:
+        if "<Real Humans>" not in tags_to_add and "<real humans>" not in tags_to_add:
+            tags_to_add.append("<Real Humans>")
+
+    for sk in ("style_lora", "style_loras"):
+        val = ctx.settings.get(sk)
+        if val:
+            items = val if isinstance(val, list) else [x.strip() for x in str(val).split(",")]
+            for item in items:
+                itag = item if item.startswith("<") else f"<{item}>"
+                if itag not in tags_to_add:
+                    tags_to_add.append(itag)
 
     # Merge in any raw tags extracted from the prompt/settings
     for tag in all_tags:
@@ -3723,6 +3739,10 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
                     lora_map[lora_filename] = key
                     lora_map[lora_filename.split(".")[0]] = key
 
+        # Map persona alias 'june' to default character LoRA key
+        if "domi" in lora_map:
+            lora_map["june"] = lora_map["domi"]
+
     # Find tags in prompt
     active_lora_keys = set()
     tags = re.findall(r"<([^>]+)>", prompt)
@@ -3740,6 +3760,7 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
             for k in active_lora_keys
         )
         if not has_character_lora:
+            matched_key = None
             # Check character_lora, then assistant_model in settings
             for setting_key in ("character_lora", "assistant_model"):
                 candidate = ctx.settings.get(setting_key, "").lower().strip("<> ")
@@ -3753,6 +3774,45 @@ async def generate_image(ctx: UserContext, prompt, chat: str = 'default', update
                         active_lora_keys.add(matched_key)
                         logging.info(f"Using LoRA from settings ({setting_key}={candidate}): {matched_key} ({lora_nodes[matched_key].get('name')})")
                         break
+            
+            # Fallback to default character LoRA if still none found
+            if not matched_key:
+                default_char_key = (
+                    lora_map.get("domi")
+                    or next((k for k, v in lora_nodes.items() if v.get("type") == "character"), None)
+                )
+                if default_char_key:
+                    active_lora_keys.add(default_char_key)
+                    logging.info(f"Using default character LoRA: {default_char_key} ({lora_nodes[default_char_key].get('name')})")
+
+    # Ensure style LoRA is active if applicable
+    has_style_lora = any(
+        lora_nodes.get(k, {}).get("type") == "style"
+        for k in active_lora_keys
+    )
+    if not has_style_lora:
+        # Check settings for explicit style_lora / style_loras / loras
+        style_candidates = []
+        for sk in ("style_lora", "style_loras", "loras"):
+            val = ctx.settings.get(sk)
+            if isinstance(val, list):
+                style_candidates.extend([str(x).lower().strip("<> ") for x in val])
+            elif isinstance(val, str) and val.strip():
+                style_candidates.extend([x.lower().strip("<> ") for x in val.split(",")])
+
+        for cand in style_candidates:
+            cand_key = lora_map.get(cand) or lora_map.get(cand.replace(" ", "_")) or lora_map.get(cand.replace(" ", ""))
+            if cand_key and cand_key in lora_nodes:
+                active_lora_keys.add(cand_key)
+                has_style_lora = True
+                logging.info(f"Using style LoRA from settings: {cand_key} ({lora_nodes[cand_key].get('name')})")
+
+        # If still no style LoRA and in realistic style, activate default style LoRA for work mode
+        if not has_style_lora and style == "realistic" and not effective_fun:
+            work_style_key = lora_map.get("real humans") or lora_map.get("real_humans")
+            if work_style_key and work_style_key in lora_nodes:
+                active_lora_keys.add(work_style_key)
+                logging.info(f"Using default style LoRA for realistic work mode: {work_style_key} ({lora_nodes[work_style_key].get('name')})")
 
     # Reset all loras to off, then activate active ones
     for key, val in lora_nodes.items():

@@ -37,6 +37,8 @@ def get_prompt(filename):
 DEFAULT_USER_PROMPT = get_prompt("default.txt")
 DEFAULT_ASSISTANT_APPEARANCE = get_prompt("default_appearance.txt")
 
+DEFAULT_ASSISTANT_MODEL = SETTINGS.get("DEFAULT_ASSISTANT_MODEL", "Domi")
+
 def load_user_settings(**kwargs):
     """Возвращает базовые настройки. Все важное придет от клиента."""
     return {
@@ -45,6 +47,8 @@ def load_user_settings(**kwargs):
         "assistant_name": DEFAULT_ASSISTANT_NAME,
         "assistant_title": DEFAULT_ASSISTANT_TITLE,
         "assistant_appearance": DEFAULT_ASSISTANT_APPEARANCE,
+        "assistant_model": DEFAULT_ASSISTANT_MODEL,
+        "character_lora": DEFAULT_ASSISTANT_MODEL,
         "kb_id": DEFAULT_KB_ID
     }
 
